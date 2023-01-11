@@ -1,0 +1,16 @@
+transformers==4.2.1
+datasets
+pandas
+scikit-learn
+prettytable
+gradio
+torch
+setuptools
+tqdm==4.47.0
+jsonlines
+numpy
+pytorch_transformers==1.2.0
+torchcontrib
+scipy
+typing
+tensorboardX
