@@ -388,7 +388,7 @@ class RelationalBertSelfAttention(nn.Module):
         # Apply the attention mask is (precomputed for all layers in BertModel forward() function)
         # print(attention_scores)
         # print(attention_mask)
-        # print(attention_scores.size(),attention_mask.size())
+        print(attention_scores.size(),attention_mask.size())
         attention_scores = attention_scores + attention_mask
 
         # Normalize the attention scores to probabilities.

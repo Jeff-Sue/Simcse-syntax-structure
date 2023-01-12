@@ -78,8 +78,7 @@ def head_to_tree(tokenizer, token, head, len_, prune, subj_pos, obj_pos, dep_rel
     assert len(head) == len_
     # head = head[:len_].tolist()
     root = None
-
-    dep_rel = [constant.DEPREL_TO_ID[i.lower()] for i in dep_rel]
+    dep_rel = [constant.DEPREL_TO_ID[i.lower()] if i.lower in constant.DEPREL_TO_ID.keys() else 72 for i in dep_rel]
     head1 = [0]
     dep_rel1 = [0]
     if prune < 0:
@@ -92,7 +91,6 @@ def head_to_tree(tokenizer, token, head, len_, prune, subj_pos, obj_pos, dep_rel
         dep_rel1.append(0)
         if len(head1) > 128:
             head1 = head1[:128]
-        print(head1)
         if len(dep_rel1) > 128:
             dep_rel1 = dep_rel1[:128]
         nodes = [Tree() for _ in head1]
