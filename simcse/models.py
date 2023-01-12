@@ -72,7 +72,7 @@ class Pooler(nn.Module):
         last_hidden = torch.tensor(outputs)
         # pooler_output = outputs.pooler_output
         # hidden_states = outputs.hidden_states
-
+        print(self.pooler_type)
         if self.pooler_type in ['cls_before_pooler', 'cls']:
             return last_hidden[:,0]
         elif self.pooler_type == "avg":
@@ -124,14 +124,15 @@ def cl_forward(cls,
 ):
     # print(torch.tensor(input_ids).size())
     # print(adj_matrix)
-    adj_matrix = torch.squeeze(adj_matrix)
-    dep_rel_matrix = torch.squeeze(dep_rel_matrix)
+    adj_matrix = adj_matrix.squeeze(dim=2)
+    dep_rel_matrix = dep_rel_matrix.squeeze(dim=2)
     # print(adj_matrix.size())
     return_dict = return_dict if return_dict is not None else cls.config.use_return_dict
     ori_input_ids = input_ids
     batch_size = input_ids.size(0)
     # Number of sentences in one instance
     # 2: pair instance; 3: pair instance with a hard negative
+
     num_sent = input_ids.size(1)
 
     mlm_outputs = None
@@ -182,10 +183,10 @@ def cl_forward(cls,
         )
 
 
-    config1 = SyntaxBertConfig.from_pretrained('config/re/late_fusion.json',
-                                              num_labels=42,
-                                              finetuning_task='tacred')
-    syntax_encoder = GNNRelationModel(config1)
+    # config1 = SyntaxBertConfig.from_pretrained('config/re/late_fusion.json',
+    #                                           num_labels=42,
+    #                                           finetuning_task='tacred')
+    syntax_encoder = GNNRelationModel(cls.config1)
     # print(sequence_outputs[0].size())
     outputs = syntax_encoder(sequence_outputs[0],
                                           adj_matrix,
@@ -195,7 +196,7 @@ def cl_forward(cls,
     # Pooling
     # print(outputs.size())
     pooler_output = cls.pooler(attention_mask, outputs)
-    # print("pooler_output: ",pooler_output.size())
+    print("pooler_output: ",pooler_output.size())
     pooler_output = pooler_output.view((batch_size, num_sent, pooler_output.size(-1))) # (bs, num_sent, hidden)
 
     # If using "cls", we add an extra MLP layer
@@ -275,6 +276,9 @@ def cl_forward(cls,
 def sentemb_forward(
     cls,
     encoder,
+    adj_matrix=None,
+    dep_rel_matrix=None,
+    seq_len=None,
     input_ids=None,
     attention_mask=None,
     token_type_ids=None,
@@ -286,10 +290,23 @@ def sentemb_forward(
     output_hidden_states=None,
     return_dict=None,
 ):
-
+    adj_matrix = adj_matrix.squeeze(dim=1)
+    dep_rel_matrix = dep_rel_matrix.squeeze(dim=1)
     return_dict = return_dict if return_dict is not None else cls.config.use_return_dict
 
-    outputs = encoder(
+    adj_matrix = adj_matrix.cpu().detach().numpy()
+    # print(np.shape(adj_matrix))
+    dep_rel_matrix = dep_rel_matrix.cpu().detach().numpy()
+    adj_matrix = torch.from_numpy(adj_matrix)
+    dep_rel_matrix = torch.from_numpy(dep_rel_matrix)
+    # adj_matrix = torch.from_numpy(np.concatenate(adj_matrix,
+    #                                                    axis=0))
+    # dep_rel_matrix = torch.from_numpy(np.concatenate(dep_rel_matrix,
+    #                                                        axis=0))
+    input_ids = input_ids.view((-1, input_ids.size(-1)))  # (bs * num_sent, len)
+    # print('input_ids',input_ids.size())
+    attention_mask = attention_mask.view((-1, attention_mask.size(-1)))  # (bs * num_sent, len)
+    sequence_outputs = encoder(
         input_ids,
         attention_mask=attention_mask,
         token_type_ids=token_type_ids,
@@ -300,7 +317,15 @@ def sentemb_forward(
         output_hidden_states=True if cls.pooler_type in ['avg_top2', 'avg_first_last'] else False,
         return_dict=True,
     )
-
+    # config1 = SyntaxBertConfig.from_pretrained('config/re/late_fusion.json',
+    #                                            num_labels=42,
+    #                                            finetuning_task='tacred')
+    syntax_encoder = GNNRelationModel(cls.config1)
+    # print(sequence_outputs[0].size())
+    outputs = syntax_encoder(sequence_outputs[0],
+                             adj_matrix,
+                             dep_rel_matrix,
+                             seq_len)
     pooler_output = cls.pooler(attention_mask, outputs)
     if cls.pooler_type == "cls" and not cls.model_args.mlp_only_train:
         pooler_output = cls.mlp(pooler_output)
@@ -310,8 +335,8 @@ def sentemb_forward(
 
     return BaseModelOutputWithPoolingAndCrossAttentions(
         pooler_output=pooler_output,
-        last_hidden_state=outputs.last_hidden_state,
-        hidden_states=outputs.hidden_states,
+        # last_hidden_state=outputs.last_hidden_state,
+        # hidden_states=outputs.hidden_states,
     )
 
 
@@ -322,7 +347,9 @@ class BertForCL(BertPreTrainedModel):
         super().__init__(config)
         self.model_args = model_kargs["model_args"]
         self.bert = BertModel(config, add_pooling_layer=False)
-
+        self.config1 =SyntaxBertConfig.from_pretrained('config/re/late_fusion.json',
+                                               num_labels=42,
+                                               finetuning_task='tacred')
         if self.model_args.do_mlm:
             self.lm_head = BertLMPredictionHead(config)
 
@@ -346,37 +373,40 @@ class BertForCL(BertPreTrainedModel):
         mlm_input_ids=None,
         mlm_labels=None,
     ):
-        # if sent_emb:
-        #     return sentemb_forward(self, self.bert,
-        #         input_ids=input_ids,
-        #         attention_mask=attention_mask,
-        #         token_type_ids=token_type_ids,
-        #         position_ids=position_ids,
-        #         head_mask=head_mask,
-        #         inputs_embeds=inputs_embeds,
-        #         labels=labels,
-        #         output_attentions=output_attentions,
-        #         output_hidden_states=output_hidden_states,
-        #         return_dict=return_dict,
-        #     )
-        # else:
-        return cl_forward(self, self.bert,
-            adj_matrix=adj_matrix,
-            dep_rel_matrix=dep_rel_matrix,
-            seq_len=seq_len,
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            token_type_ids=token_type_ids,
-            position_ids=position_ids,
-            head_mask=head_mask,
-            inputs_embeds=inputs_embeds,
-            labels=labels,
-            output_attentions=output_attentions,
-            output_hidden_states=output_hidden_states,
-            return_dict=return_dict,
-            mlm_input_ids=mlm_input_ids,
-            mlm_labels=mlm_labels,
-        )
+        if sent_emb:
+            return sentemb_forward(self, self.bert,
+                adj_matrix=adj_matrix,
+                dep_rel_matrix=dep_rel_matrix,
+                seq_len=seq_len,
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                token_type_ids=token_type_ids,
+                position_ids=position_ids,
+                head_mask=head_mask,
+                inputs_embeds=inputs_embeds,
+                labels=labels,
+                output_attentions=output_attentions,
+                output_hidden_states=output_hidden_states,
+                return_dict=return_dict,
+            )
+        else:
+            return cl_forward(self, self.bert,
+                adj_matrix=adj_matrix,
+                dep_rel_matrix=dep_rel_matrix,
+                seq_len=seq_len,
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                token_type_ids=token_type_ids,
+                position_ids=position_ids,
+                head_mask=head_mask,
+                inputs_embeds=inputs_embeds,
+                labels=labels,
+                output_attentions=output_attentions,
+                output_hidden_states=output_hidden_states,
+                return_dict=return_dict,
+                mlm_input_ids=mlm_input_ids,
+                mlm_labels=mlm_labels,
+            )
 
 
 

@@ -46,7 +46,8 @@ from transformers.trainer_callback import (
 from transformers.trainer_pt_utils import (
     reissue_pt_warnings,
 )
-
+from transformers import BertTokenizer
+from model.tree import head_to_tree, tree_to_adj
 from transformers.utils import logging
 from transformers.data.data_collator import DataCollator, DataCollatorWithPadding, default_data_collator
 import torch
@@ -102,18 +103,48 @@ class CLTrainer(Trainer):
         def prepare(params, samples):
             return
 
-        def batcher(params, batch):
-            sentences = [' '.join(s) for s in batch]
+        def batcher(params, batch_token, batch_head, batch_rel):
+
+            maxlen = 32
+            sentences = [' '.join(s) for s in batch_token]
+            print(sentences)
+            tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
+            trees = [head_to_tree(tokenizer,
+                                  batch_token[i],
+                                  batch_head[i],
+                                  len(batch_head[i]),
+                                  -1,
+                                  None,
+                                  None,
+                                  batch_rel[i]) for i in range(len(batch_token))]
+            adj_matrix_list, dep_rel_matrix_list = [], []
+            for tree in trees:
+                adj_matrix, dep_rel_matrix = tree_to_adj(maxlen,
+                                                         tree,
+                                                         directed=False,
+                                                         self_loop=True)
+                adj_matrix = adj_matrix.reshape(1, maxlen, maxlen)
+                adj_matrix_list.append(adj_matrix)
+
+                dep_rel_matrix = dep_rel_matrix.reshape(1, maxlen, maxlen)
+                dep_rel_matrix_list.append(dep_rel_matrix)
             batch = self.tokenizer.batch_encode_plus(
                 sentences,
                 return_tensors='pt',
-                padding=True,
+                max_length=maxlen,
+                pad_to_max_length=True,
             )
+            batch['dep_rel_matrix'] = torch.tensor([dep_rel_matrix_list[i] for i in range(len(batch_token))])
+            batch['adj_matrix'] = torch.tensor([adj_matrix_list[i] for i in range(len(batch_token))])
+            print(batch['dep_rel_matrix'].size())
+            print(batch['input_ids'].size())
+            # batch['seq_len'] = None
             for k in batch:
                 batch[k] = batch[k].to(self.args.device)
             with torch.no_grad():
                 outputs = self.model(**batch, output_hidden_states=True, return_dict=True, sent_emb=True)
                 pooler_output = outputs.pooler_output
+            print(pooler_output.size())
             return pooler_output.cpu()
 
         # Set params for SentEval (fastmode)
@@ -122,16 +153,16 @@ class CLTrainer(Trainer):
                                             'tenacity': 3, 'epoch_size': 2}
 
         se = senteval.engine.SE(params, batcher, prepare)
-        tasks = ['STSBenchmark', 'SICKRelatedness']
+        tasks = ['STSBenchmark']
         if eval_senteval_transfer or self.args.eval_transfer:
             tasks = ['STSBenchmark', 'SICKRelatedness', 'MR', 'CR', 'SUBJ', 'MPQA', 'SST2', 'TREC', 'MRPC']
         self.model.eval()
         results = se.eval(tasks)
         
-        stsb_spearman = results['STSBenchmark']['dev']['spearman'][0]
-        sickr_spearman = results['SICKRelatedness']['dev']['spearman'][0]
-
-        metrics = {"eval_stsb_spearman": stsb_spearman, "eval_sickr_spearman": sickr_spearman, "eval_avg_sts": (stsb_spearman + sickr_spearman) / 2} 
+        stsb_spearman = results['STSBenchmark']['test']['spearman'][0]
+        # sickr_spearman = results['SICKRelatedness']['test']['spearman'][0]
+        sickr_spearman = 0
+        metrics = {"eval_stsb_spearman": stsb_spearman, "eval_sickr_spearman": sickr_spearman, "eval_avg_sts": (stsb_spearman + sickr_spearman) / 2}
         if eval_senteval_transfer or self.args.eval_transfer:
             avg_transfer = 0
             for task in ['MR', 'CR', 'SUBJ', 'MPQA', 'SST2', 'TREC', 'MRPC']:
